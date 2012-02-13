@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2008 The Android Open Source Project
- * Copyright (c) 2011 Code Aurora Forum
+ * Copyright (C) 2011 Code Aurora Forum
+ * Copyright (C) 2012 fredvj
  * Not a Contribution. Notifications and licenses are retained for attribution purposes only
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,29 +39,6 @@
 
 #include "SoftapController.h"
 
-#ifdef QCOM_WLAN
-#include "qsap.h"
-#endif
-
-#ifdef ATH_WIFI
-#include <athdefs.h>
-#include <a_types.h>
-#include <a_osapi.h>
-#include <wmi.h>
-#include <athdrv_linux.h>
-#include <athtypes_linux.h>
-#include <ieee80211.h>
-#include <ieee80211_ioctl.h>
-
-#include "NetlinkManager.h"
-#include "ResponseCode.h"
-
-#include "private/android_filesystem_config.h"
-#include "cutils/properties.h"
-#ifdef HAVE_LIBC_SYSTEM_PROPERTIES
-#define _REALLY_INCLUDE_SYS__SYSTEM_PROPERTIES_H_
-#endif
-
 #include <sys/_system_properties.h>
 #include "libhostapd_client/wpa_ctrl.h"
 
@@ -78,109 +56,11 @@ static const char HOSTAPD_PROP_NAME[]      = "init.svc.hostapd";
 #define WIFI_DEFAULT_PREAMBLE   0
 #define WIFI_AP_INTERFACE       "softap.0"
 
-static int if_rename(int sock, const char *oldName, const char *newName)
-{
-    int ret;
-    int flags;
-    NetlinkManager *nm;
-    struct ifreq ifr;
-    do {
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, oldName, IFNAMSIZ);
-        if ((ret=ioctl(sock, SIOCGIFFLAGS, (caddr_t)&ifr)) <0) {
-            break;
-        }
-        flags = (ifr.ifr_flags & 0xffff);
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, oldName, IFNAMSIZ);
-        ifr.ifr_flags = (flags & ~IFF_UP);
-        if ((ret=ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr))<0) {
-            break;
-        }
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, oldName, IFNAMSIZ);
-        strncpy(ifr.ifr_newname, newName, IFNAMSIZ);
-        if ((ret = ioctl(sock, SIOCSIFNAME, &ifr)) < 0) {
-            break;
-        }
-        memset(&ifr, 0, sizeof(ifr));
-        strncpy(ifr.ifr_name, newName, IFNAMSIZ);
-        ifr.ifr_flags = (flags | IFF_UP);
-        if ((ret=ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr))<0) {
-            break;
-        }
-        nm = NetlinkManager::Instance();
-        if (nm) {
-            char msg[255];
-            snprintf(msg, sizeof(msg), "Iface removed %s", oldName);
-            nm->getBroadcaster()->sendBroadcast(ResponseCode::InterfaceChange,
-                                                 msg, false);
-            snprintf(msg, sizeof(msg), "Iface added %s", newName);
-            nm->getBroadcaster()->sendBroadcast(ResponseCode::InterfaceChange,
-                                                 msg, false);
-        }
-    } while (0);
-    return ret;
-}
-
-int ensure_config_file_exists()
-{
-    char buf[2048];
-    int srcfd, destfd;
-    int nread;
-
-    if (access(HOSTAPD_CONFIG_FILE, R_OK|W_OK) == 0) {
-        return 0;
-    } else if (errno != ENOENT) {
-        LOGE("Cannot access \"%s\": %s", HOSTAPD_CONFIG_FILE, strerror(errno));
-        return -1;
-    }
-
-    srcfd = open(HOSTAPD_CONFIG_TEMPLATE, O_RDONLY);
-    if (srcfd < 0) {
-        LOGE("Cannot open \"%s\": %s", HOSTAPD_CONFIG_TEMPLATE, strerror(errno));
-        return -1;
-    }
-
-    destfd = open(HOSTAPD_CONFIG_FILE, O_CREAT|O_WRONLY, 0660);
-    if (destfd < 0) {
-        close(srcfd);
-        LOGE("Cannot create \"%s\": %s", HOSTAPD_CONFIG_FILE, strerror(errno));
-        return -1;
-    }
-
-    while ((nread = read(srcfd, buf, sizeof(buf))) != 0) {
-        if (nread < 0) {
-            LOGE("Error reading \"%s\": %s", HOSTAPD_CONFIG_TEMPLATE, strerror(errno));
-            close(srcfd);
-            close(destfd);
-            unlink(HOSTAPD_CONFIG_FILE);
-            return -1;
-        }
-        write(destfd, buf, nread);
-    }
-
-    close(destfd);
-    close(srcfd);
-
-    if (chown(HOSTAPD_CONFIG_FILE, AID_SYSTEM, AID_WIFI) < 0) {
-        LOGE("Error changing group ownership of %s to %d: %s",
-             HOSTAPD_CONFIG_FILE, AID_WIFI, strerror(errno));
-        unlink(HOSTAPD_CONFIG_FILE);
-        return -1;
-    }
-
-    return 0;
-}
 
 int wifi_start_hostapd()
 {
     char supp_status[PROPERTY_VALUE_MAX] = {'\0'};
     int count = 200; /* wait at most 20 seconds for completion */
-#ifdef HAVE_LIBC_SYSTEM_PROPERTIES
-    const prop_info *pi;
-    unsigned serial = 0;
-#endif
 
     /* Check whether already running */
     if (property_get(HOSTAPD_PROP_NAME, supp_status, NULL)
@@ -192,42 +72,14 @@ int wifi_start_hostapd()
     /* Clear out any stale socket files that might be left over. */
     wpa_ctrl_cleanup();
 
-#ifdef HAVE_LIBC_SYSTEM_PROPERTIES
-    /*
-     * Get a reference to the status property, so we can distinguish
-     * the case where it goes stopped => running => stopped (i.e.,
-     * it start up, but fails right away) from the case in which
-     * it starts in the stopped state and never manages to start
-     * running at all.
-     */
-    pi = __system_property_find(HOSTAPD_PROP_NAME);
-    if (pi != NULL) {
-        serial = pi->serial;
-    }
-#endif
     property_set("ctl.start", HOSTAPD_NAME);
     sched_yield();
 
     while (count-- > 0) {
-#ifdef HAVE_LIBC_SYSTEM_PROPERTIES
-        if (pi == NULL) {
-            pi = __system_property_find(HOSTAPD_PROP_NAME);
-        }
-        if (pi != NULL) {
-            __system_property_read(pi, NULL, supp_status);
-            if (strcmp(supp_status, "running") == 0) {
-                return 0;
-            } else if (pi->serial != serial &&
-                    strcmp(supp_status, "stopped") == 0) {
-                return -1;
-            }
-        }
-#else
         if (property_get(HOSTAPD_PROP_NAME, supp_status, NULL)) {
             if (strcmp(supp_status, "running") == 0)
                 return 0;
         }
-#endif
         usleep(100000);
     }
     return -1;
@@ -256,10 +108,6 @@ int wifi_stop_hostapd()
     }
     return -1;
 }
-
-#endif /* ATH_WIFI */
-
-
 
 
 SoftapController::SoftapController() {
@@ -297,85 +145,13 @@ int SoftapController::getPrivFuncNum(char *iface, const char *fname) {
 }
 
 int SoftapController::startDriver(char *iface) {
-#ifdef QCOM_WLAN
-    if(0 != wifi_qsap_load_driver())
-        return -1;
-    else
-        return 0;
-#else /* QCOM_WLAN */
-    struct iwreq wrq;
-    int fnum, ret;
-
-    if (mSock < 0) {
-        LOGE("Softap driver start - failed to open socket");
-        return -1;
-    }
-    if (!iface || (iface[0] == '\0')) {
-        LOGD("Softap driver start - wrong interface");
-        iface = mIface;
-    }
-#ifdef ATH_WIFI
-    /* Before starting the daemon, make sure its config file exists */
-    ret = ensure_config_file_exists();
-    if (ret < 0) {
-        LOGE("Softap driver start - configuration file missing");
-        return -1;
-    }
-    LOGD("Softap driver start: %d", ret);
-    return ret;
-#else /* ATH_WIFI */
-    fnum = getPrivFuncNum(iface, "START");
-    if (fnum < 0) {
-        LOGE("Softap driver start - function not supported");
-        return -1;
-    }
-    strncpy(wrq.ifr_name, iface, sizeof(wrq.ifr_name));
-    wrq.u.data.length = 0;
-    wrq.u.data.pointer = mBuf;
-    wrq.u.data.flags = 0;
-    ret = ioctl(mSock, fnum, &wrq);
-    usleep(AP_DRIVER_START_DELAY);
-    LOGD("Softap driver start: %d", ret);
-    return ret;
-#endif /* ATH_WIFI */
-#endif /* QCOM_WLAN */
+	LOGD("Softap driver start - Qualcomm NOOP");
+	return 0;
 }
 
 int SoftapController::stopDriver(char *iface) {
-#ifdef QCOM_WLAN
-    return 0;
-#else /* QCOM_WLAN */
-    struct iwreq wrq;
-    int fnum, ret;
-
-    if (mSock < 0) {
-        LOGE("Softap driver stop - failed to open socket");
-        return -1;
-    }
-    if (!iface || (iface[0] == '\0')) {
-        LOGD("Softap driver stop - wrong interface");
-        iface = mIface;
-    }
-#ifdef ATH_WIFI
-    ret = 0;
-    LOGD("Softap driver stop: %d", ret);
-    return ret;
-#else /* ATH_WIFI */
-    fnum = getPrivFuncNum(iface, "STOP");
-    if (fnum < 0) {
-        LOGE("Softap driver stop - function not supported");
-        return -1;
-    }
-    strncpy(wrq.ifr_name, iface, sizeof(wrq.ifr_name));
-    wrq.u.data.length = 0;
-    wrq.u.data.pointer = mBuf;
-    wrq.u.data.flags = 0;
-    ret = ioctl(mSock, fnum, &wrq);
-    LOGD("Softap driver stop: %d", ret);
-    return ret;
-#endif /* ATH_WIFI */
-#endif /* QCOM_WLAN */
-
+	LOGD("Softap driver stop - Qualcomm NOOP");
+	return 0;
 }
 
 int SoftapController::startSoftap() {
@@ -808,60 +584,6 @@ int SoftapController::setSoftap(int argc, char *argv[]) {
  */
 int SoftapController::fwReloadSoftap(int argc, char *argv[])
 {
-#ifdef QCOM_WLAN
-    return 0;
-#else /* QCOM_WLAN */
-
-    struct iwreq wrq;
-    int fnum, ret, i = 0;
-    char *iface;
-
-    if (mSock < 0) {
-        LOGE("Softap fwrealod - failed to open socket");
-        return -1;
-    }
-    if (argc < 4) {
-        LOGE("Softap fwreload - missing arguments");
-        return -1;
-    }
-#ifdef ATH_WIFI
-    ret = 0;
-    if (ret) {
-        LOGE("Softap fwReload - failed: %d", ret);
-    }
-    else {
-        LOGD("Softap fwReload - Ok");
-    }
-    return ret;
-#else /* ATH_WIFI */
-    iface = argv[2];
-    fnum = getPrivFuncNum(iface, "WL_FW_RELOAD");
-    if (fnum < 0) {
-        LOGE("Softap fwReload - function not supported");
-        return -1;
-    }
-
-    if (strcmp(argv[3], "AP") == 0) {
-#ifdef WIFI_DRIVER_FW_AP_PATH
-        sprintf(mBuf, "FW_PATH=%s", WIFI_DRIVER_FW_AP_PATH);
-#endif
-    } else {
-#ifdef WIFI_DRIVER_FW_STA_PATH
-        sprintf(mBuf, "FW_PATH=%s", WIFI_DRIVER_FW_STA_PATH);
-#endif
-    }
-    strncpy(wrq.ifr_name, iface, sizeof(wrq.ifr_name));
-    wrq.u.data.length = strlen(mBuf) + 1;
-    wrq.u.data.pointer = mBuf;
-    wrq.u.data.flags = 0;
-    ret = ioctl(mSock, fnum, &wrq);
-    if (ret) {
-        LOGE("Softap fwReload - failed: %d", ret);
-    }
-    else {
-        LOGD("Softap fwReload - Ok");
-    }
-    return ret;
-#endif /* ATH_WIFI */
-#endif /* QCOM_WLAN */
+	LOGD("SoftapController::fwReloadSoftap - Qualcomm NOOP");
+	return 0;
 }
