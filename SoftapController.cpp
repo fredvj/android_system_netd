@@ -68,23 +68,39 @@ static const char HOSTAPD_PROP_NAME[]	= "init.svc.hostapd";
 #define WIFI_AP_MAX_LINE	256
 
 
+int fexists(const char *filename) {
+    struct stat status;
+
+    if(stat(filename, &status) == 0) {
+	LOGD("fexists: \"%s\" found", filename);
+	return 1;
+    }
+
+    LOGE("fexists: \"%s\" not found", filename);
+
+  return 0;
+}
+
+
 int wifi_start_hostapd()
 {
     char supp_status[PROPERTY_VALUE_MAX] = {'\0'};
     int count = 100;
 
-    /* Check whether already running */
+    // Check whether hostapd is already running
 
-    if (property_get(HOSTAPD_PROP_NAME, supp_status, NULL)
-            && strcmp(supp_status, "running") == 0) {
+    property_get(HOSTAPD_PROP_NAME, supp_status, NULL);
+
+    if(strcmp(supp_status, "running") == 0 && fexists(WIFI_AP_CONTROL)) {
 	LOGD("Helper: hostapd is already running ?!");
         return 0;
     }
 
+    // Delete old control file
 
-    /* Clear out any stale socket files that might be left over. */
+    unlink(WIFI_AP_CONTROL);
 
-    // wpa_ctrl_cleanup();
+    // Try to start the hostapd service
 
     LOGD("Helper: Sending hostapd ctl.start");
     property_set("ctl.start", HOSTAPD_NAME);
@@ -93,8 +109,16 @@ int wifi_start_hostapd()
     while(count-- > 0) {
         if(property_get(HOSTAPD_PROP_NAME, supp_status, NULL)) {
             if (strcmp(supp_status, "running") == 0) {
-		LOGD("Helper: hostapd is running");
-		return 0;
+		usleep(500000);
+
+		if(fexists(WIFI_AP_CONTROL)) {
+			LOGD("Helper: hostapd is running");
+			return 0;
+		}
+		else {
+			LOGE("Helper: hostapd accepted the start signal, but socket does not exist. Demon probably died. See logs.");
+			return -1;
+		}
 	    }
         }
 	LOGD("Helper: Countdown waiting for hostapd: %d", count);
@@ -144,10 +168,6 @@ int wifi_configuration_file(void)
 {
     FILE *scf, *stf;
     int c;
-
-    // Delete old control file
-
-    unlink(WIFI_AP_CONTROL);
 
     // Check if we can open the config file
 
@@ -465,25 +485,13 @@ int SoftapController::setSoftap(int argc, char *argv[]) {
 		return -1;
 	}
 
-	// If the hostapd is running, restart it
+	// If the hostapd is running, log a warning
 
 	if(isSoftapStarted()) {
-		// Try to stop it ...
-
-		if(stopSoftap() != 0) {
-			LOGE("setSoftap: stopSoftap failed during attempt to restart");
-
-			return -1;
-		}
-
-		// ... and start it again
-
-		if(startSoftap() != 0) {
-			LOGE("setSoftap: startSoftap failed during attempt to restart");
-
-			return -1;
-		}
+		LOGW("setSoftap: Configuration changed while hostapd is running. Using old config until next start.");
 	}
+
+	// The configuration has been written
 
 	return 0;
 }
