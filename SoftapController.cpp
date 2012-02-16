@@ -279,7 +279,12 @@ int wifi_configuration_change(char *SSID, char *Security, char *Key)
 	// ssid=
 
 	if(strstr(line, "ssid=") != NULL) {
-		snprintf(line, sizeof(line), "ssid=%s", SSID);
+		// Make sure we do not kill other lines containing the "ssid" substring
+
+		if(strstr(line, "ignore_broadcast_ssid=") == NULL &&
+		   strstr(line, "bssid=") == NULL) {
+			snprintf(line, sizeof(line), "ssid=%s\n", SSID);
+		}
 	}
 
 	// wpa=
