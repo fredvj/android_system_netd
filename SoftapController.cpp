@@ -179,6 +179,8 @@ int wifi_configuration_file(void)
 	return 0;
     }
 
+    fprintf(scf, "# Empty accept list\n\n");
+
     fclose(scf);
 
     // Create empty deny list
@@ -190,6 +192,8 @@ int wifi_configuration_file(void)
 
 	return 0;
     }
+
+    fprintf(scf, "# Empty deny list\n\n");
 
     fclose(scf);
 
@@ -440,10 +444,20 @@ int SoftapController::setSoftap(int argc, char *argv[]) {
 		LOGD("SoftapController::setSoftap - argv[%d] := %s", i, argv[i]);
 	}
 
-	// Try to write the new configuration to the Qualcom hostapd file
+	// First make sure we have a configuration file to work on
+
+	if(!wifi_configuration_file()) {
+		LOGE("setSoftap: Configuration file preflight check failed");
+
+		return -1;
+	}
+
+	// Try to write the new configuration to the Qualcomm hostapd file
 
 	if(!wifi_configuration_change(argv[4], argv[5], argv[6])) {
 		LOGE("setSoftap: Failed to write configuration to file");
+
+		return -1;
 	}
 
 	// If the hostapd is running, restart it
