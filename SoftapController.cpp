@@ -59,6 +59,13 @@ static const char HOSTAPD_NAME[]	= "hostapd";
 static const char HOSTAPD_PROP_NAME[]	= "init.svc.hostapd";
 
 #define WIFI_AP_INTERFACE       "softap.0"
+#define WIFI_AP_FOLDER		"/data/hostapd"
+#define WIFI_AP_CONTROL		"/data/hostapd/softap.0"
+#define WIFI_AP_CONFIG_FILE	"/data/hostapd/hostapd.conf"
+#define WIFI_AP_CONFIG_TEMPLATE	"/system/etc/wifi/softap/hostapd.conf"
+#define WIFI_AP_ACCEPT_LIST	"/data/hostapd/hostapd.accept"
+#define WIFI_AP_DENY_LIST	"/data/hostapd/hostapd.deny"
+#define WIFI_AP_MAX_LINE	256
 
 
 int wifi_start_hostapd()
@@ -94,7 +101,7 @@ int wifi_start_hostapd()
 
         usleep(200000);
     }
-    LOGD("Helper: hostapd failed to start within 20 seconds");
+    LOGE("Helper: hostapd failed to start within 20 seconds");
 
     return -1;
 }
@@ -127,9 +134,193 @@ int wifi_stop_hostapd()
 
         usleep(200000);
     }
-    LOGD("Helper: hostapd failed to stop within 6 seconds");
+    LOGE("Helper: hostapd failed to stop within 6 seconds");
 
     return -1;
+}
+
+
+int wifi_configuration_file(void)
+{
+    FILE *scf, *stf;
+    int c;
+
+    // Delete old control file
+
+    unlink(WIFI_AP_CONTROL);
+
+    // Check if we can open the config file
+
+    scf = fopen (WIFI_AP_CONFIG_FILE, "r");
+
+    if(scf != NULL) {
+	// We are done. We can open the config file -> Folder exists, file exists
+
+	fclose(scf);
+
+	LOGD("Helper: Hostapd configuration file exists");
+
+	return 1;
+    }
+
+    LOGD("Helper: Trying to create hostapd config file from template");
+
+    // If the folder for our configuration files does not exist, create it
+
+    mkdir(WIFI_AP_FOLDER, 0770);
+
+    // Create empty accept list
+
+    scf = fopen(WIFI_AP_ACCEPT_LIST, "w");
+
+    if(scf == NULL) {
+	LOGE("Helper: Failed to create \"%s\"", WIFI_AP_ACCEPT_LIST);
+
+	return 0;
+    }
+
+    fclose(scf);
+
+    // Create empty deny list
+
+    scf = fopen(WIFI_AP_DENY_LIST, "w");
+
+    if(scf == NULL) {
+	LOGE("Helper: Failed to create \"%s\"", WIFI_AP_DENY_LIST);
+
+	return 0;
+    }
+
+    fclose(scf);
+
+    // Open the template
+
+    stf = fopen(WIFI_AP_CONFIG_TEMPLATE, "r");
+
+    // If we cannot open the template, all we can do is fail
+
+    if(stf == NULL) {
+	LOGE("Helper: Failed to open configuration template \"%s\" for hostapd", WIFI_AP_CONFIG_TEMPLATE);
+
+	return 0;
+    }
+
+    // Create the configuration file
+
+    scf = fopen(WIFI_AP_CONFIG_FILE, "w");
+
+    // If we cannot create the configuration, fail as well
+
+    if(scf == NULL) {
+	LOGE("Helper: Failed to create configuration file \"%s\" for hostapd", WIFI_AP_CONFIG_FILE);
+
+	return 0;
+    }
+
+    // Loop to copy template file
+
+    while((c = fgetc(stf)) != EOF) fputc(c, scf);
+
+    // Close the template
+
+    fclose(stf);
+
+    // Close the newly created config file
+
+    fclose(scf);
+
+    // Happy ending
+
+    return 1;
+}
+
+
+int wifi_configuration_change(char *SSID, char *Security, char *Key)
+{
+    FILE *scf, *stf;
+    char line[WIFI_AP_MAX_LINE];
+    int bSecure = 1;
+
+    // Open the template
+
+    stf = fopen(WIFI_AP_CONFIG_TEMPLATE, "r");
+
+    // If we cannot open the template, all we can do is fail
+
+    if(stf == NULL) {
+	LOGE("Helper: Failed to open configuration template \"%s\" for hostapd", WIFI_AP_CONFIG_TEMPLATE);
+
+	return 0;
+    }
+
+    // Create the configuration file
+
+    scf = fopen(WIFI_AP_CONFIG_FILE, "w");
+
+    // If we cannot create the configuration, fail as well
+
+    if(scf == NULL) {
+	LOGE("Helper: Failed to create configuration file \"%s\" for hostapd", WIFI_AP_CONFIG_FILE);
+
+	return 0;
+    }
+
+    // Check if the user configured an open network
+
+    if(strcmp(Security, "open") == 0) bSecure = 0;
+
+    // Loop to copy the template, replacing values on the fly
+
+    while(fgets(line, sizeof(line), stf) != NULL) {
+	// ssid=
+
+	if(strstr(line, "ssid=") != NULL) {
+		snprintf(line, sizeof(line), "ssid=%s", SSID);
+	}
+
+	// wpa=
+
+	if(strstr(line, "wpa=") != NULL) {
+		if(bSecure)
+		 snprintf(line, sizeof(line), "wpa=2");
+		else
+		 snprintf(line, sizeof(line), "# wpa=2");
+	}
+
+	// wpa_passphrase=
+
+	if(strstr(line, "wpa_passphrase=") != NULL) {
+		if(bSecure)
+		 snprintf(line, sizeof(line), "wpa_passphrase=%s", Key);
+		else
+		 snprintf(line, sizeof(line), "# wpa_passphrase=this_is_stupid");
+	}
+
+	// rsn_pairwise=
+
+	if(strstr(line, "rsn_pairwise=") != NULL) {
+		if(bSecure)
+		 snprintf(line, sizeof(line), "rsn_pairwise=TKIP CCMP");
+		else
+		 snprintf(line, sizeof(line), "# rsn_pairwise=TKIP CCMP");
+	}
+
+	// Write back the changed or unchanged line
+
+	fputs(line, scf);
+    }
+
+    // Close the template
+
+    fclose(stf);
+
+    // Close the newly created config file
+
+    fclose(scf);
+
+    // Happy ending
+
+    return 1;
 }
 
 
@@ -179,11 +370,19 @@ int SoftapController::stopDriver(char *iface) {
 int SoftapController::startSoftap() {
 	LOGD("SoftapController::startSoftap()");
 
+	if(!wifi_configuration_file()) {
+		LOGE("startSoftap: Pre flight check for configuration file failed");
+
+		return -1;
+	}
+
 	if(wifi_start_hostapd() == 0) {
 		mPid = 23;
 
 		return 0;
 	}
+
+	LOGE("startSoftap: Failed to start hostapd");
 
 	return -1;
 }
@@ -196,6 +395,8 @@ int SoftapController::stopSoftap() {
 
 		return 0;
 	}
+
+	LOGE("stopSoftap: Failed to stop hostapd");
 
 	return -1;
 }
@@ -233,10 +434,36 @@ int SoftapController::addParam(int pos, const char *cmd, const char *arg)
 int SoftapController::setSoftap(int argc, char *argv[]) {
 	int i;
 
-	LOGD("SoftapController::setSoftap - Qualcomm NOOP");
+	LOGD("SoftapController::setSoftap - Qualcomm");
 
 	for(i=0; i<argc; i++) {
 		LOGD("SoftapController::setSoftap - argv[%d] := %s", i, argv[i]);
+	}
+
+	// Try to write the new configuration to the Qualcom hostapd file
+
+	if(!wifi_configuration_change(argv[4], argv[5], argv[6])) {
+		LOGE("setSoftap: Failed to write configuration to file");
+	}
+
+	// If the hostapd is running, restart it
+
+	if(isSoftapStarted()) {
+		// Try to stop it ...
+
+		if(stopSoftap() != 0) {
+			LOGE("setSoftap: stopSoftap failed during attempt to restart");
+
+			return -1;
+		}
+
+		// ... and start it again
+
+		if(startSoftap() != 0) {
+			LOGE("setSoftap: startSoftap failed during attempt to restart");
+
+			return -1;
+		}
 	}
 
 	return 0;
