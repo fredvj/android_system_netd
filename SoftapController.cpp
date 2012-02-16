@@ -286,27 +286,27 @@ int wifi_configuration_change(char *SSID, char *Security, char *Key)
 
 	if(strstr(line, "wpa=") != NULL) {
 		if(bSecure)
-		 snprintf(line, sizeof(line), "wpa=2");
+		 snprintf(line, sizeof(line), "wpa=2\n");
 		else
-		 snprintf(line, sizeof(line), "# wpa=2");
+		 snprintf(line, sizeof(line), "# wpa=2\n");
 	}
 
 	// wpa_passphrase=
 
 	if(strstr(line, "wpa_passphrase=") != NULL) {
 		if(bSecure)
-		 snprintf(line, sizeof(line), "wpa_passphrase=%s", Key);
+		 snprintf(line, sizeof(line), "wpa_passphrase=%s\n", Key);
 		else
-		 snprintf(line, sizeof(line), "# wpa_passphrase=this_is_stupid");
+		 snprintf(line, sizeof(line), "# wpa_passphrase=this_is_stupid\n");
 	}
 
 	// rsn_pairwise=
 
 	if(strstr(line, "rsn_pairwise=") != NULL) {
 		if(bSecure)
-		 snprintf(line, sizeof(line), "rsn_pairwise=TKIP CCMP");
+		 snprintf(line, sizeof(line), "rsn_pairwise=TKIP CCMP\n");
 		else
-		 snprintf(line, sizeof(line), "# rsn_pairwise=TKIP CCMP");
+		 snprintf(line, sizeof(line), "# rsn_pairwise=TKIP CCMP\n");
 	}
 
 	// Write back the changed or unchanged line
